@@ -46,6 +46,17 @@ Section Robustness.
       Z.abs (x - x0) <= Z.of_nat delta ->
       classify (network x W B) = classify (network x0 W B).
 
+  Definition not_robust_at x x0 W B delta :=
+    Z.abs (x - x0) <= Z.of_nat delta /\
+    classify (network x W B) <> classify (network x0 W B).
+
+  Lemma not_robust_at_not_robust : forall x0 W B delta,
+    (exists x, not_robust_at x x0 W B delta) ->
+    ~local_robust x0 W B delta.
+  Proof.
+    intros * (x & ? & Hneq) Hrobust; auto.
+  Qed.
+
   (** Robustness checker *)
   (* Collect all points within delta of x0 in a list *)
   Fixpoint nearby_points x0 delta :=
@@ -174,11 +185,61 @@ Section Robustness.
     rewrite !network_zero; eauto using all_zeros_correct, all_zeros_not_nil.
   Qed.
 
+  (** Counterexample finder *)
+  (* Compare the network at x0 against all points in X to find where it is
+     not robust *)
+  Fixpoint is_not_robust_at_aux x0 X W B :=
+    match X with
+    | nil => None
+    | x :: X' =>
+        if negb (label_eq (classify (network x W B)) (classify (network x0 W B)))
+          then Some x
+          else is_not_robust_at_aux x0 X' W B
+    end.
+
+  (* Compare the network at x0 against all points within delta *)
+  Definition is_not_robust_at x0 W B delta :=
+    is_not_robust_at_aux x0 (nearby_points x0 delta) W B.
+
+  Arguments is_not_robust_at _ _ _ _ /.
+
+  (** Soundness proof *)
+  (* If the counterexample finder returns a point then the network is
+     actually not robust at that point *)
+  Lemma is_not_robust_at_sound : forall x0 W B delta x,
+    is_not_robust_at x0 W B delta = Some x ->
+    not_robust_at x x0 W B delta.
+  Proof.
+    induction delta; cbn; intros * Hrobust; hnf.
+    - (* delta = 0, trivial *)
+      match type of Hrobust with
+      | context[if (negb ?x) then _ else _] => destruct x eqn:Heq
+      end; inversion Hrobust; subst.
+      rewrite <- label_eq_equiv, Heq.
+      split; auto; lia.
+    - (* induction case *)
+      rewrite Zpos_P_of_succ_nat in *.
+      repeat match type of Hrobust with
+      | context[if (negb ?x) then _ else _] =>
+          destruct x eqn:?Heq; cbn in Hrobust
+      end.
+      + rewrite label_eq_equiv in Heq, Heq0.
+        apply IHdelta in Hrobust.
+        destruct Hrobust.
+        split; auto; lia.
+      + inversion Hrobust; subst.
+        rewrite <- label_eq_equiv.
+        split; (congruence || lia).
+      + inversion Hrobust; subst.
+        rewrite <- label_eq_equiv.
+        split; (congruence || lia).
+  Qed.
+
 End Robustness.
 
 Section Example.
 
-  (* A and B labels. Values less than 7 are in A, all else in B *)
+  (* A and B labels. Values less than 10 are in A, all else in B *)
   Inductive ex_label := A | B.
   Definition ex_classify x :=
     if x <? 10 then A else B.
@@ -203,11 +264,20 @@ Section Example.
   Compute (network x W B). (* 63 *)
   Compute (network (x - Z.of_nat delta) W B). (* 45 *)
   Compute (is_robust x W B delta). (* true *)
+  Compute (is_not_robust_at x W B delta). (* None *)
   Goal local_robust x W B delta.
   Proof.
     apply is_robust_sound.
     auto.
   Qed.
+
+  (* Can't prove with is_robust_fast *)
+  Compute (is_robust_fast x W B delta). (* false *)
+  Goal local_robust x W B delta.
+  Proof.
+    apply is_robust_fast_sound.
+    Fail reflexivity.
+  Abort.
 
   Let y := 3.
   Compute (network y W B). (* 27 *)
@@ -222,13 +292,17 @@ Section Example.
     inversion Hcontra.
   Qed.
 
-  (* Can't prove with is_robust_fast *)
-  Compute (is_robust_fast x W B delta). (* false *)
-  Goal local_robust x W B delta.
+  (* Counterexample finder tells us that the network is not robust and also
+     at what point it is not robust *)
+  Compute (is_not_robust_at y W B delta). (* Some 0 *)
+  Goal ~local_robust y W B delta /\ not_robust_at 0 y W B delta.
   Proof.
-    apply is_robust_fast_sound.
-    Fail reflexivity.
-  Abort.
+    split.
+    - apply not_robust_at_not_robust.
+      exists 0.
+      apply is_not_robust_at_sound; auto.
+    - apply is_not_robust_at_sound; auto.
+  Qed.
 
   Let B' := (0 :: 0 :: nil).
   Let W' := (0 :: 0 :: nil).
